@@ -3,9 +3,11 @@ import pandas as pd
 import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import requests
+import yfinance as yf
 
 # --- Sayfa Ayarları ---
-st.set_page_config(page_title="Kişisel Finans Asistanım", layout="wide", page_icon="💰")
+st.set_page_config(page_title="Servet Yönetim İstasyonu", layout="wide", page_icon="💎")
 
 # --- Google Sheets Bağlantısı ---
 def get_google_sheet():
@@ -30,11 +32,50 @@ def get_google_sheet():
     client = gspread.authorize(creds)
     return client.open("FinansVerim").sheet1
 
+# --- CANLI FİYAT MOTORU (Robots) ---
+@st.cache_data(ttl=3600) # Verileri 1 saat hafızada tut, sürekli istek atma
+def get_tefas_price(fon_kodu):
+    """TEFAS'tan fon fiyatını çeker"""
+    try:
+        url = f"https://www.tefas.gov.tr/FonAnaliz.aspx?FonKod={fon_kodu}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            # Basit string parse işlemi (HTML parse yerine daha hızlı)
+            content = response.text
+            start = content.find('<span id="MainContent_PanelInfo_LabelPrice">')
+            if start != -1:
+                sub = content[start:]
+                end = sub.find('</span>')
+                price_str = sub[44:end].replace(',', '.')
+                return float(price_str)
+    except:
+        pass
+    return None
+
+@st.cache_data(ttl=3600)
+def get_gold_usd_price():
+    """Altın ve Dolar fiyatını yfinance'den çeker"""
+    try:
+        # Gram Altın (Ons * Dolar / 31.10) yaklaşık hesabı yerine
+        # Direkt veri çekmeyi deneyelim veya sabit kuralım.
+        # Yahoo Finance'de Gram Altın TRY kodu: 'GLD' tam karşılamaz.
+        # Dolar Kuru:
+        usd_try = yf.Ticker("TRY=X").history(period="1d")['Close'].iloc[-1]
+        
+        # Ons Altın:
+        ons = yf.Ticker("GC=F").history(period="1d")['Close'].iloc[-1]
+        
+        gram_altin_tl = (ons * usd_try) / 31.1035
+        return {"Dolar": usd_try, "Gram Altın": gram_altin_tl}
+    except:
+        return {"Dolar": 0, "Gram Altın": 0}
+
 # --- Başlık ---
-st.title("📊 Kişisel Varlık Yönetimi")
+st.title("💎 Servet Yönetim İstasyonu")
 
 # --- Yan Menü ---
-menu = ["Genel Bakış", "İşlem Ekle", "Portföy (Yatırım & BES)", "İşlem Geçmişi"]
+menu = ["Genel Bakış", "İşlem Ekle", "CANLI PORTFÖY", "İşlem Geçmişi"]
 secim = st.sidebar.selectbox("Menü", menu)
 
 # --- VERİLERİ ÇEKME ---
@@ -55,170 +96,175 @@ try:
 except Exception as e:
     pass
 
-# --- 1. İŞLEM EKLEME (GÜNCELLENDİ) ---
+# --- 1. İŞLEM EKLEME ---
 if secim == "İşlem Ekle":
     st.header("Yeni İşlem Ekle")
 
-    # 1. ADIM: İşlem Türü Seçimi
     tur_listesi = ["Gider", "Gelir", "Yatırım (Normal)", "BES (Bireysel Emeklilik)"]
-    tur_secimi = st.radio("İşlem Türü Seçiniz:", tur_listesi, horizontal=True)
-    
+    tur_secimi = st.radio("İşlem Türü:", tur_listesi, horizontal=True)
     st.divider()
 
-    # 2. ADIM: Dinamik Kategori Seçimi (Form DIŞINDA)
     kategori_adi = "" 
-    
     col_secim, col_bos = st.columns([1, 1])
     
     with col_secim:
-        # --- A. YATIRIM SEÇİLİRSE ---
         if tur_secimi == "Yatırım (Normal)":
-            liste = ["Fiziki Altın (Gr)", "KHA Fonu", "RIK Fonu", "TZL Fonu", "DİĞER / ELLE GİRİŞ"]
+            # Listeyi senin verdiğin fonlara göre güncelledim
+            liste = ["Fiziki Altın (Gr)", "KHA", "RIK", "TZL", "DİĞER"]
             secilen = st.selectbox("Yatırım Aracı:", liste)
-            
-            if secilen == "DİĞER / ELLE GİRİŞ":
-                kategori_adi = st.text_input("Yatırım Adını Buraya Yazın (Örn: THYAO):")
-            else:
-                kategori_adi = secilen
+            kategori_adi = st.text_input("Kod (Örn: THYAO)") if secilen == "DİĞER" else secilen
 
-        # --- B. BES SEÇİLİRSE ---
         elif tur_secimi == "BES (Bireysel Emeklilik)":
-            liste = ["NHN Fonu", "EİH Fonu", "FEİ Fonu", "DİĞER / ELLE GİRİŞ"]
+            liste = ["NHN", "EİH", "FEİ", "DİĞER"]
             secilen = st.selectbox("BES Fonu:", liste)
-            
-            if secilen == "DİĞER / ELLE GİRİŞ":
-                kategori_adi = st.text_input("BES Fon Adını Yazın:")
-            else:
-                kategori_adi = secilen
+            kategori_adi = st.text_input("BES Fon Kodu:") if secilen == "DİĞER" else secilen
         
-        # --- C. GELİR SEÇİLİRSE (YENİ) ---
         elif tur_secimi == "Gelir":
-            # Sadece gelir kalemleri
-            liste = ["Maaş", "Ek Ders", "DİĞER / ELLE GİRİŞ"]
+            liste = ["Maaş", "Ek Ders", "DİĞER"]
             secilen = st.selectbox("Gelir Kaynağı:", liste)
-            
-            if secilen == "DİĞER / ELLE GİRİŞ":
-                kategori_adi = st.text_input("Gelir Adını Yazın (Örn: Prim, Satış):")
-            else:
-                kategori_adi = secilen
-
-        # --- D. GİDER SEÇİLİRSE ---
+            kategori_adi = st.text_input("Gelir Adı:") if secilen == "DİĞER" else secilen
         else:
-            # Sadece gider kalemleri
-            liste = ["Market", "Fatura", "Kira", "Yeme-İçme", "Eğlence", "Ulaşım", "DİĞER / ELLE GİRİŞ"]
+            liste = ["Market", "Fatura", "Kira", "Yeme-İçme", "Eğlence", "Ulaşım", "DİĞER"]
             secilen = st.selectbox("Gider Kategorisi:", liste)
-            
-            if secilen == "DİĞER / ELLE GİRİŞ":
-                kategori_adi = st.text_input("Gider Adını Yazın:")
-            else:
-                kategori_adi = secilen
+            kategori_adi = st.text_input("Gider Adı:") if secilen == "DİĞER" else secilen
 
-    # 3. ADIM: Detaylar ve Kaydetme (Form İÇİNDE)
     with st.form("islem_formu"):
-        st.write(f"**Seçilen:** {tur_secimi} > {kategori_adi}")
-        
         col1, col2 = st.columns(2)
         tarih = col1.date_input("Tarih", datetime.date.today())
-        aciklama = st.text_input("Açıklama (Opsiyonel)")
+        aciklama = st.text_input("Açıklama")
 
         adet = 0.0
         birim_fiyat = 0.0
         tutar = 0.0
         
-        # Eğer Yatırım veya BES ise Adet/Fiyat sor
         if "Yatırım" in tur_secimi or "BES" in tur_secimi:
             c1, c2 = st.columns(2)
-            adet = c1.number_input("Adet (Lot/Pay/Gram)", min_value=0.0, format="%.2f")
-            birim_fiyat = c2.number_input("Birim Fiyat (₺)", min_value=0.0, format="%.4f")
+            adet = c1.number_input("Adet/Lot", min_value=0.0, format="%.2f")
+            birim_fiyat = c2.number_input("Alış Fiyatı (₺)", min_value=0.0, format="%.4f")
             tutar = adet * birim_fiyat
-            st.info(f"💰 Toplam Tutar: {tutar:,.2f} ₺ (Otomatik Hesaplanacak)")
+            st.info(f"Maliyet: {tutar:,.2f} ₺")
         else:
-            # Gelir veya Gider ise sadece Tutar sor
             tutar = st.number_input("Tutar (₺)", min_value=0.0, format="%.2f")
 
-        kaydet = st.form_submit_button("KAYDET")
-        
-        if kaydet:
-            if sheet is None:
-                st.error("Veritabanı bağlantısı yok.")
-            elif kategori_adi == "":
-                st.warning("Lütfen bir isim/kategori giriniz.")
-            else:
-                if "Yatırım" in tur_secimi or "BES" in tur_secimi:
-                    hesaplanan_tutar = adet * birim_fiyat
-                else:
-                    hesaplanan_tutar = tutar
-
-                tarih_str = tarih.strftime("%Y-%m-%d")
-                yeni_satir = [tarih_str, tur_secimi, kategori_adi, hesaplanan_tutar, aciklama, adet, birim_fiyat, 0]
-                
+        if st.form_submit_button("KAYDET"):
+            if sheet:
+                hesaplanan_tutar = adet * birim_fiyat if ("Yatırım" in tur_secimi or "BES" in tur_secimi) else tutar
+                yeni_satir = [tarih.strftime("%Y-%m-%d"), tur_secimi, kategori_adi, hesaplanan_tutar, aciklama, adet, birim_fiyat, 0]
                 sheet.append_row(yeni_satir)
-                st.success(f"✅ İşlem başarıyla kaydedildi!")
+                st.success("✅ Kaydedildi!")
                 st.rerun()
 
-# --- 2. PORTFÖY (YATIRIM & BES) ---
-elif secim == "Portföy (Yatırım & BES)":
-    st.header("📈 Varlıklarım")
+# --- 2. CANLI PORTFÖY (EN BÜYÜK YENİLİK) ---
+elif secim == "CANLI PORTFÖY":
+    st.header("📈 Canlı Varlık Analizi")
     
     if not df.empty and "Tip" in df.columns:
+        # Sadece Yatırım ve BES satırlarını al
         varlik_df = df[df["Tip"].astype(str).str.contains("Yatırım|BES", regex=True)].copy()
         
         if not varlik_df.empty:
+            # 1. Elimizdeki toplam adetleri bulalım
             portfoy = varlik_df.groupby(["Tip", "Kategori"]).agg({
                 'Adet': 'sum',
-                'Tutar': 'sum'
+                'Tutar': 'sum' # Bu toplam ödenen para (Maliyet)
             }).reset_index()
             
+            # Adeti 0 olanları çıkar (Satılmışsa)
             portfoy = portfoy[portfoy['Adet'] > 0]
             portfoy["Ort. Maliyet"] = portfoy["Tutar"] / portfoy["Adet"]
             
-            # Basit Simülasyon
-            portfoy["Güncel Fiyat (Tahmini)"] = portfoy["Ort. Maliyet"] * 1.10 
-            portfoy["Toplam Değer"] = portfoy["Adet"] * portfoy["Güncel Fiyat (Tahmini)"]
-            portfoy["Kâr/Zarar (₺)"] = portfoy["Toplam Değer"] - portfoy["Tutar"]
+            # 2. CANLI FİYATLARI ÇEKELİM
+            market_data = get_gold_usd_price() # Dolar ve Altın'ı bir kere çek
             
+            guncel_fiyatlar = []
+            
+            progress_text = "Piyasa verileri çekiliyor..."
+            my_bar = st.progress(0, text=progress_text)
+            
+            total_items = len(portfoy)
+            
+            for index, row in portfoy.iterrows():
+                kod = row['Kategori']
+                fiyat = 0
+                
+                # A. Fon Kontrolü (3 harfli ve büyükse genelde fondur)
+                if len(kod) == 3 and kod.isupper() and kod not in ["BES", "USD", "EUR"]:
+                    tefas_fiyat = get_tefas_price(kod)
+                    if tefas_fiyat:
+                        fiyat = tefas_fiyat
+                    else:
+                        fiyat = row['Ort. Maliyet'] # Bulamazsa maliyeti yaz
+                
+                # B. Altın Kontrolü
+                elif "Altın" in kod:
+                    fiyat = market_data["Gram Altın"]
+                
+                # C. Diğerleri için şimdilik maliyeti kullan
+                else:
+                    fiyat = row['Ort. Maliyet']
+                
+                guncel_fiyatlar.append(fiyat)
+                my_bar.progress((index + 1) / total_items)
+            
+            my_bar.empty() # Yükleme çubuğunu kaldır
+            
+            # 3. Hesaplamalar
+            portfoy["Canlı Fiyat"] = guncel_fiyatlar
+            portfoy["Güncel Değer"] = portfoy["Adet"] * portfoy["Canlı Fiyat"]
+            portfoy["Net Kâr (₺)"] = portfoy["Güncel Değer"] - portfoy["Tutar"]
+            portfoy["Getiri (%)"] = (portfoy["Net Kâr (₺)"] / portfoy["Tutar"]) * 100
+            
+            # 4. Tabloyu Renklendir ve Göster
+            st.write("### 🧩 Varlık Detayı")
+            
+            # Fonksiyon: Kâr ise yeşil, Zarar ise kırmızı yaz
+            def color_profit(val):
+                color = 'green' if val > 0 else 'red'
+                return f'color: {color}'
+
             st.dataframe(portfoy.style.format({
                 "Tutar": "{:,.2f} ₺",
-                "Ort. Maliyet": "{:,.4f} ₺",
-                "Güncel Fiyat (Tahmini)": "{:,.4f} ₺",
-                "Toplam Değer": "{:,.2f} ₺",
-                "Kâr/Zarar (₺)": "{:,.2f} ₺"
-            }), use_container_width=True)
+                "Ort. Maliyet": "{:,.4f}",
+                "Canlı Fiyat": "{:,.4f}",
+                "Güncel Değer": "{:,.2f} ₺",
+                "Net Kâr (₺)": "{:,.2f} ₺",
+                "Getiri (%)": "%{:,.2f}"
+            }).applymap(color_profit, subset=['Net Kâr (₺)', 'Getiri (%)']), use_container_width=True)
             
-            toplam_bes = portfoy[portfoy["Tip"].str.contains("BES")]["Toplam Değer"].sum()
-            toplam_yatirim = portfoy[portfoy["Tip"].str.contains("Yatırım")]["Toplam Değer"].sum()
+            # 5. Büyük Özet Kartları
+            toplam_yatirilan = portfoy["Tutar"].sum()
+            toplam_guncel = portfoy["Güncel Değer"].sum()
+            toplam_kar = toplam_guncel - toplam_yatirilan
             
-            c1, c2 = st.columns(2)
-            c1.metric("Toplam Normal Yatırım", f"{toplam_yatirim:,.2f} ₺")
-            c2.metric("Toplam BES Birikimi", f"{toplam_bes:,.2f} ₺")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Toplam Yatırılan", f"{toplam_yatirilan:,.2f} ₺")
+            c2.metric("Anlık Toplam Değer", f"{toplam_guncel:,.2f} ₺")
+            c3.metric("Toplam Kâr/Zarar", f"{toplam_kar:,.2f} ₺", delta=f"%{(toplam_kar/toplam_yatirilan)*100:.2f}")
+            
         else:
-            st.info("Henüz portföyünde aktif bir yatırım yok.")
-    else:
-        st.write("Veri yok.")
+            st.info("Portföy boş.")
 
 # --- 3. GENEL BAKIŞ ---
 elif secim == "Genel Bakış":
-    st.header("Durum Özeti")
+    st.header("💰 Nakit Akışı")
     if not df.empty and "Tip" in df.columns:
         df["Tip"] = df["Tip"].astype(str)
-        
         gelir = df[df["Tip"] == "Gelir"]["Tutar"].sum()
         gider = df[df["Tip"] == "Gider"]["Tutar"].sum()
-        yatirim_giden = df[df["Tip"].str.contains("Yatırım|BES", regex=True)]["Tutar"].sum()
-        kalan = gelir - gider - yatirim_giden # Nakit akışı
+        yatirim_harcama = df[df["Tip"].str.contains("Yatırım|BES", regex=True)]["Tutar"].sum()
         
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Toplam Gelir", f"{gelir:,.2f} ₺")
-        col2.metric("Toplam Gider", f"{gider:,.2f} ₺", delta_color="inverse")
-        col3.metric("Yatırım+BES", f"{yatirim_giden:,.2f} ₺")
-        col4.metric("Kalan Nakit", f"{kalan:,.2f} ₺")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Gelirler", f"{gelir:,.2f} ₺")
+        col2.metric("Giderler", f"{gider:,.2f} ₺", delta_color="inverse")
+        col3.metric("Yatırıma Aktarılan", f"{yatirim_harcama:,.2f} ₺")
+        
+        st.subheader("Bütçe Durumu")
+        kalan = gelir - gider - yatirim_harcama
+        st.write(f"Cepte Kalan Nakit: **{kalan:,.2f} ₺**")
     else:
-        st.info("Veri girişi bekleniyor...")
+        st.info("Veri yok.")
 
-# --- 4. GEÇMİŞ ---
 elif secim == "İşlem Geçmişi":
-    st.header("Tüm Kayıtlar")
+    st.header("Kayıt Defteri")
     if not df.empty:
         st.dataframe(df, use_container_width=True)
-    else:
-        st.write("Veri yok.")
