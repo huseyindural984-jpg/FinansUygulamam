@@ -70,7 +70,7 @@ if secim == "İşlem Ekle":
         # --- BURASI DEĞİŞTİ: Esnek Kategori Seçimi ---
         if "Yatırım" in tur_secimi:
             # Buraya sık kullandıklarını yazabilirsin
-            populer_yatirimlar = ["Fiziki Altın (Gr)", "Dolar", "Euro", "TTE", "IPB", "THYAO", "DİĞER / ELLE GİRİŞ"]
+            populer_yatirimlar = ["Fiziki Altın (Gr)", "KHA", "RIK", "TZL", "DİĞER / ELLE GİRİŞ"]
             secilen_yatirim = col2.selectbox("Yatırım Aracı Seç:", populer_yatirimlar)
             
             # Eğer 'Diğer' seçilirse yazı kutusu aç
@@ -183,3 +183,4 @@ elif secim == "İşlem Geçmişi":
         st.dataframe(df, use_container_width=True)
     else:
         st.write("Veri yok.")
+
