@@ -53,53 +53,64 @@ try:
     else:
         df = pd.DataFrame(columns=["Tarih", "Tip", "Kategori", "Tutar", "Aciklama", "Adet", "Birim_Fiyat", "Guncel_Deger"])
 except Exception as e:
-    # Sessizce devam et, hata mesajı basma
     pass
 
-# --- 1. İŞLEM EKLEME (DÜZELTİLEN KISIM) ---
+# --- 1. İŞLEM EKLEME ---
 if secim == "İşlem Ekle":
     st.header("Yeni İşlem Ekle")
 
-    # DİKKAT: Bu seçimi formun DIŞINA aldık ki anında güncellensin
     tur_secimi = st.radio("Önce İşlem Türünü Seçin:", ["Gider", "Gelir", "Yatırım (Alış)", "Yatırım (Satış)"], horizontal=True)
     
-    st.divider() # Araya çizgi çek
+    st.divider()
 
     with st.form("islem_formu"):
         col1, col2 = st.columns(2)
         tarih = col1.date_input("Tarih", datetime.date.today())
         
-        # Seçilen türe göre form içeriğini değiştiriyoruz
+        # --- BURASI DEĞİŞTİ: Esnek Kategori Seçimi ---
         if "Yatırım" in tur_secimi:
-            kategori = col2.selectbox("Yatırım Aracı (Fon/Hisse)", ["TTE", "IPB", "NNF", "THYAO", "ALTIN", "Diğer"])
+            # Buraya sık kullandıklarını yazabilirsin
+            populer_yatirimlar = ["Fiziki Altın (Gr)", "Dolar", "Euro", "TTE", "IPB", "THYAO", "DİĞER / ELLE GİRİŞ"]
+            secilen_yatirim = col2.selectbox("Yatırım Aracı Seç:", populer_yatirimlar)
+            
+            # Eğer 'Diğer' seçilirse yazı kutusu aç
+            if secilen_yatirim == "DİĞER / ELLE GİRİŞ":
+                kategori = col2.text_input("Yatırım Adını Yazın (Örn: AFT, Bilezik, Arsa)")
+            else:
+                kategori = secilen_yatirim
             
             st.info("👇 Yatırım Detayları")
             c1, c2 = st.columns(2)
-            adet = c1.number_input("Adet (Lot/Pay)", min_value=0.0, format="%.2f")
+            adet = c1.number_input("Adet (Lot/Pay/Gram)", min_value=0.0, format="%.2f")
             birim_fiyat = c2.number_input("Birim Fiyat (₺)", min_value=0.0, format="%.4f")
             
-            # Form içinde anlık hesaplama yapılamaz ama kullanıcıya bilgi verebiliriz
             tutar = adet * birim_fiyat 
-            st.write("*(Tutar kaydederken otomatik hesaplanacak)*")
+            st.write(f"*Hesaplanan Tutar: {tutar:,.2f} ₺*")
             
         else:
-            # Gelir veya Gider ise
-            kategori = col2.selectbox("Kategori", ["Market", "Fatura", "Kira", "Maaş", "Yeme-İçme", "Eğlence", "Diğer"])
+            # Gelir/Gider Kategorileri
+            populer_giderler = ["Market", "Fatura", "Kira", "Maaş", "Yeme-İçme", "Eğlence", "DİĞER"]
+            secilen_gider = col2.selectbox("Kategori Seç:", populer_giderler)
+            
+            if secilen_gider == "DİĞER":
+                kategori = col2.text_input("Kategori Adını Yazın")
+            else:
+                kategori = secilen_gider
+                
             tutar = st.number_input("Tutar (₺)", min_value=0.0, format="%.2f")
-            # Yatırım olmadığı için adet ve fiyat 0
             adet = 0.0
             birim_fiyat = 0.0
 
         aciklama = st.text_input("Açıklama (Opsiyonel)")
         
-        # Kaydet Butonu
         kaydet = st.form_submit_button("Kaydet")
         
         if kaydet:
             if sheet is None:
                 st.error("Veritabanı bağlantısı yok.")
+            elif kategori == "":
+                st.warning("Lütfen bir kategori/yatırım adı giriniz.")
             else:
-                # Eğer yatırım ise tutarı biz hesaplayalım
                 if "Yatırım" in tur_secimi:
                     hesaplanan_tutar = adet * birim_fiyat
                 else:
@@ -109,7 +120,7 @@ if secim == "İşlem Ekle":
                 yeni_satir = [tarih_str, tur_secimi, kategori, hesaplanan_tutar, aciklama, adet, birim_fiyat, 0]
                 
                 sheet.append_row(yeni_satir)
-                st.success(f"✅ {tur_secimi} işlemi kaydedildi!")
+                st.success(f"✅ {tur_secimi} işlemi kaydedildi: {kategori}")
                 st.rerun()
 
 # --- 2. PORTFÖY & VARLIKLAR ---
@@ -120,15 +131,17 @@ elif secim == "Portföy & Varlıklar":
         yatirim_df = df[df["Tip"].astype(str).str.contains("Yatırım")].copy()
         
         if not yatirim_df.empty:
+            # İsme göre grupla (Fiziki Altın'ları birleştir, TTE'leri birleştir)
             portfoy = yatirim_df.groupby("Kategori").agg({
                 'Adet': 'sum',
                 'Tutar': 'sum'
             }).reset_index()
             
-            # Sıfıra bölünme hatasını önle
             portfoy = portfoy[portfoy['Adet'] > 0]
             
             portfoy["Ort. Maliyet"] = portfoy["Tutar"] / portfoy["Adet"]
+            
+            # --- Basit Simülasyon (Şimdilik) ---
             portfoy["Güncel Fiyat (Tahmini)"] = portfoy["Ort. Maliyet"] * 1.10 
             portfoy["Toplam Değer"] = portfoy["Adet"] * portfoy["Güncel Fiyat (Tahmini)"]
             portfoy["Kâr/Zarar (₺)"] = portfoy["Toplam Değer"] - portfoy["Tutar"]
