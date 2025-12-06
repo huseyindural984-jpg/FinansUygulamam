@@ -33,29 +33,40 @@ def get_google_sheet():
 # --- Başlık ---
 st.title("📊 Kişisel Varlık ve Bütçe Yönetimi")
 
-try:
-    sheet = get_google_sheet()
-except Exception as e:
-    st.error("Veritabanına bağlanılamadı. Lütfen Sayfayı Yenileyin.")
-    st.stop()
-
 # --- Yan Menü ---
 menu = ["Genel Bakış", "İşlem Ekle", "Portföy & Varlıklar", "İşlem Geçmişi"]
 secim = st.sidebar.selectbox("Menü", menu)
 
-# --- VERİLERİ ÇEKME ---
+# --- VERİLERİ GÜVENLİ ÇEKME (Hata Önleyici Modül) ---
+sheet = None
+df = pd.DataFrame()
+
 try:
+    sheet = get_google_sheet()
     data = sheet.get_all_records()
-    df = pd.DataFrame(data)
-    if not df.empty:
-        # Sayısal dönüşümler (Hata almamak için)
+    
+    # Eğer veri varsa DataFrame oluştur
+    if data:
+        df = pd.DataFrame(data)
+        
+        # Sütun isimlerini kontrol et (Tip sütunu var mı?)
+        if "Tip" not in df.columns:
+            st.error("⚠️ Hata: Google Tablo'da 'Tip' sütunu bulunamadı. Lütfen 1. satırdaki başlıkları kontrol et.")
+            st.stop()
+            
+        # Sayısal dönüşümler
         cols = ['Tutar', 'Adet', 'Birim_Fiyat']
         for col in cols:
-            # Virgüllü sayıları (10,5) noktaya (10.5) çevirip sayı yapıyoruz
             if col in df.columns:
                  df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
-except:
-    df = pd.DataFrame()
+    else:
+        # Veri yoksa bile boş ama doğru sütunlu bir tablo oluştur
+        df = pd.DataFrame(columns=["Tarih", "Tip", "Kategori", "Tutar", "Aciklama", "Adet", "Birim_Fiyat", "Guncel_Deger"])
+
+except Exception as e:
+    st.error(f"Veri çekilirken hata oluştu: {e}")
+    df = pd.DataFrame() # Hata durumunda boş tablo ile devam et
+
 
 # --- 1. İŞLEM EKLEME ---
 if secim == "İşlem Ekle":
@@ -66,15 +77,12 @@ if secim == "İşlem Ekle":
         tarih = col1.date_input("Tarih", datetime.date.today())
         tur = col2.selectbox("İşlem Türü", ["Gider", "Gelir", "Yatırım (Alış)", "Yatırım (Satış)"])
         
-        # Eğer Yatırım seçilirse kategori listesi değişsin
         if "Yatırım" in tur:
             kategori = st.selectbox("Enstrüman Adı (Fon Kodu/Hisse)", ["TTE", "IPB", "NNF", "THYAO", "ALTIN", "Diğer"])
         else:
             kategori = st.selectbox("Kategori", ["Market", "Fatura", "Kira", "Maaş", "Yeme-İçme", "Eğlence", "Diğer"])
 
-        # Yatırım için Adet ve Fiyat Sor
         col3, col4 = st.columns(2)
-        
         adet = 0.0
         birim_fiyat = 0.0
         tutar = 0.0
@@ -83,7 +91,7 @@ if secim == "İşlem Ekle":
             st.info("👇 Yatırım Detaylarını Girin")
             adet = col3.number_input("Adet (Lot/Pay)", min_value=0.0, format="%.2f")
             birim_fiyat = col4.number_input("Birim Fiyat (₺)", min_value=0.0, format="%.4f")
-            tutar = adet * birim_fiyat # Otomatik hesapla
+            tutar = adet * birim_fiyat
             st.write(f"**Toplam Tutar:** {tutar:,.2f} ₺")
         else:
             tutar = st.number_input("Tutar (₺)", min_value=0.0, format="%.2f")
@@ -93,40 +101,34 @@ if secim == "İşlem Ekle":
         kaydet = st.form_submit_button("Kaydet")
         
         if kaydet:
-            tarih_str = tarih.strftime("%Y-%m-%d")
-            # Google Sheet sırasına göre: Tarih, Tip, Kategori, Tutar, Aciklama, Adet, Birim_Fiyat, Guncel_Deger
-            yeni_satir = [tarih_str, tur, kategori, tutar, aciklama, adet, birim_fiyat, 0]
-            
-            sheet.append_row(yeni_satir)
-            st.success(f"✅ {tur} işlemi kaydedildi!")
-            st.rerun()
+            if sheet is None:
+                st.error("Veritabanı bağlantısı yok, kayıt yapılamadı.")
+            else:
+                tarih_str = tarih.strftime("%Y-%m-%d")
+                yeni_satir = [tarih_str, tur, kategori, tutar, aciklama, adet, birim_fiyat, 0]
+                sheet.append_row(yeni_satir)
+                st.success(f"✅ {tur} işlemi kaydedildi!")
+                st.rerun()
 
 # --- 2. PORTFÖY & VARLIKLAR ---
 elif secim == "Portföy & Varlıklar":
     st.header("📈 Yatırım Portföyüm")
     
-    if not df.empty:
-        # Sadece Yatırım işlemlerini al
-        yatirim_df = df[df["Tip"].str.contains("Yatırım")].copy()
+    if not df.empty and "Tip" in df.columns:
+        yatirim_df = df[df["Tip"].astype(str).str.contains("Yatırım")].copy()
         
         if not yatirim_df.empty:
-            # Enstrüman bazında grupla (Örn: Tüm TTE'leri topla)
             portfoy = yatirim_df.groupby("Kategori").agg({
                 'Adet': 'sum',
                 'Tutar': 'sum'
             }).reset_index()
             
-            # Ortalama Maliyet Hesabı
             portfoy["Ort. Maliyet"] = portfoy["Tutar"] / portfoy["Adet"]
-            
-            # --- BURASI İLERİDE CANLI VERİ İLE DOLACAK ---
-            # Şimdilik örnek olması için "Güncel Fiyat"ı maliyetin %10 fazlası gibi gösterelim
             portfoy["Güncel Fiyat (Tahmini)"] = portfoy["Ort. Maliyet"] * 1.10 
             portfoy["Toplam Değer"] = portfoy["Adet"] * portfoy["Güncel Fiyat (Tahmini)"]
             portfoy["Kâr/Zarar (₺)"] = portfoy["Toplam Değer"] - portfoy["Tutar"]
             portfoy["Kâr Oranı (%)"] = (portfoy["Kâr/Zarar (₺)"] / portfoy["Tutar"]) * 100
             
-            # Tabloyu Göster
             st.dataframe(portfoy.style.format({
                 "Tutar": "{:,.2f} ₺",
                 "Ort. Maliyet": "{:,.4f} ₺",
@@ -135,18 +137,18 @@ elif secim == "Portföy & Varlıklar":
                 "Kâr/Zarar (₺)": "{:,.2f} ₺",
                 "Kâr Oranı (%)": "%{:,.2f}"
             }), use_container_width=True)
-            
-            st.info("Not: Şu an 'Güncel Fiyat' kısmını örnek olarak maliyetin %10 fazlası gösteriyorum. Bir sonraki adımda TEFAS'tan gerçek veriyi çekeceğiz.")
-            
         else:
-            st.info("Henüz yatırım kaydı girmemişsin.")
+            st.info("Henüz yatırım kaydı yok.")
     else:
-        st.write("Veri yok.")
+        st.write("Veri yok veya tablo başlıkları hatalı.")
 
 # --- 3. GENEL BAKIŞ ---
 elif secim == "Genel Bakış":
     st.header("Durum Özeti")
-    if not df.empty:
+    if not df.empty and "Tip" in df.columns:
+        # Tip sütununu string yap ki hata vermesin
+        df["Tip"] = df["Tip"].astype(str)
+        
         gelir = df[df["Tip"] == "Gelir"]["Tutar"].sum()
         gider = df[df["Tip"] == "Gider"]["Tutar"].sum()
         yatirim = df[df["Tip"].str.contains("Yatırım")]["Tutar"].sum()
@@ -155,3 +157,13 @@ elif secim == "Genel Bakış":
         col1.metric("Toplam Gelir", f"{gelir:,.2f} ₺")
         col2.metric("Toplam Gider", f"{gider:,.2f} ₺", delta_color="inverse")
         col3.metric("Yatırıma Giden", f"{yatirim:,.2f} ₺")
+    else:
+        st.info("Henüz veri yok.")
+
+# --- 4. GEÇMİŞ ---
+elif secim == "İşlem Geçmişi":
+    st.header("Tüm Kayıtlar")
+    if not df.empty:
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.write("Veri yok.")
